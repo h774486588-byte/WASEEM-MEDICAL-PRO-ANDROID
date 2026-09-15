@@ -1,4 +1,4 @@
-name: Build Waseem Medical APK
+name: Build Waseem Medical Flutter APK
 
 on:
   push:
@@ -11,30 +11,19 @@ permissions:
 
 jobs:
   build:
-    name: Build Android APK
+    name: Build Flutter Android APK
     runs-on: ubuntu-latest
 
     steps:
 
-      # 1. تحميل المستودع
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2. إعداد Java 17
-      - name: Set up Java 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
-
-      # 3. البحث عن ملف ZIP
       - name: Find project ZIP
         id: find_zip
         shell: bash
         run: |
           set -e
-
-          echo "Searching for project ZIP..."
 
           ZIP_FILE=$(find "$GITHUB_WORKSPACE" \
             -type f \
@@ -47,196 +36,142 @@ jobs:
             exit 1
           fi
 
-          echo "ZIP found:"
-          echo "$ZIP_FILE"
-
+          echo "ZIP found: $ZIP_FILE"
           echo "zip_file=$ZIP_FILE" >> "$GITHUB_OUTPUT"
 
-      # 4. فك ضغط المشروع
-      - name: Extract project ZIP
+      - name: Extract project
         shell: bash
         run: |
           set -e
 
           rm -rf "$GITHUB_WORKSPACE/extracted"
-
           mkdir -p "$GITHUB_WORKSPACE/extracted"
 
           unzip -q -o \
             "${{ steps.find_zip.outputs.zip_file }}" \
             -d "$GITHUB_WORKSPACE/extracted"
 
-          echo "Project extracted successfully."
+          echo "Project extracted."
 
-          echo "Searching Gradle files..."
-
-          find "$GITHUB_WORKSPACE/extracted" \
-            -type f \
-            \( \
-              -name 'settings.gradle' \
-              -o -name 'settings.gradle.kts' \
-              -o -name 'build.gradle' \
-              -o -name 'build.gradle.kts' \
-            \) \
-            -print
-
-      # 5. تحديد مجلد مشروع Android
-      - name: Locate Android project
-        id: locate_project
+      - name: Locate Flutter project
+        id: locate_flutter
         shell: bash
         run: |
           set -e
 
           PROJECT_DIR=""
 
-          while IFS= read -r SETTINGS_FILE; do
+          while IFS= read -r PUBSPEC; do
+            DIR=$(dirname "$PUBSPEC")
 
-            DIR=$(dirname "$SETTINGS_FILE")
-
-            if [ -f "$DIR/build.gradle" ] || \
-               [ -f "$DIR/build.gradle.kts" ]; then
-
+            if [ -d "$DIR/lib" ]; then
               PROJECT_DIR="$DIR"
               break
-
             fi
-
           done < <(
             find "$GITHUB_WORKSPACE/extracted" \
               -type f \
-              \( \
-                -name 'settings.gradle' \
-                -o -name 'settings.gradle.kts' \
-              \)
+              -name 'pubspec.yaml'
           )
 
           if [ -z "$PROJECT_DIR" ]; then
-
-            echo "::error::لم يتم العثور على مشروع Android Gradle."
-
-            echo "Available project files:"
-
+            echo "::error::لم يتم العثور على مشروع Flutter."
+            echo "ملفات المشروع الموجودة:"
             find "$GITHUB_WORKSPACE/extracted" \
-              -maxdepth 6 \
+              -maxdepth 7 \
               -type f \
               | sort
-
             exit 1
           fi
 
           PROJECT_DIR=$(realpath "$PROJECT_DIR")
 
           echo "======================================"
-          echo "ANDROID PROJECT:"
+          echo "FLUTTER PROJECT:"
           echo "$PROJECT_DIR"
           echo "======================================"
 
           echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
 
-      # 6. إعداد Gradle
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
         with:
-          gradle-version: '8.9'
+          flutter-version: '3.24.5'
+          channel: stable
+          cache: true
 
-      # 7. بناء APK
-      - name: Build Debug APK
-        working-directory: ${{ steps.locate_project.outputs.project_dir }}
+      - name: Flutter version
+        shell: bash
+        run: |
+          flutter --version
+
+      - name: Flutter pub get
+        working-directory: ${{ steps.locate_flutter.outputs.project_dir }}
+        shell: bash
+        run: |
+          set -e
+          flutter pub get
+
+      - name: Flutter analyze
+        working-directory: ${{ steps.locate_flutter.outputs.project_dir }}
+        shell: bash
+        run: |
+          set -e
+          flutter analyze
+
+      - name: Build Release APK
+        working-directory: ${{ steps.locate_flutter.outputs.project_dir }}
         shell: bash
         run: |
           set -e
 
-          echo "Starting Android build..."
+          flutter build apk \
+            --release \
+            --no-tree-shake-icons
 
-          if [ -f "./gradlew" ]; then
-
-            echo "Gradle Wrapper detected."
-
-            chmod +x ./gradlew
-
-            ./gradlew \
-              assembleDebug \
-              --stacktrace
-
-          else
-
-            echo "Gradle Wrapper not found."
-            echo "Using installed Gradle."
-
-            gradle \
-              assembleDebug \
-              --stacktrace
-
-          fi
-
-      # 8. البحث عن APK الناتج
       - name: Find generated APK
         id: find_apk
-        working-directory: ${{ steps.locate_project.outputs.project_dir }}
+        working-directory: ${{ steps.locate_flutter.outputs.project_dir }}
         shell: bash
         run: |
           set -e
 
-          echo "Searching for generated APK..."
-
-          APK_FILE=$(find . \
+          APK_FILE=$(find build/app/outputs/flutter-apk \
             -type f \
             -name '*.apk' \
-            -print \
             | head -n 1)
 
           if [ -z "$APK_FILE" ]; then
-
             echo "::error::لم يتم إنشاء APK."
-
-            echo "APK search directory:"
-            pwd
-
-            echo "Build output:"
-            find . \
-              -type f \
-              \( \
-                -name '*.apk' \
-                -o -name '*.aab' \
-              \) \
-              -print
-
+            find build -type f -name '*.apk' -print || true
             exit 1
           fi
 
-          echo "APK found:"
-          echo "$APK_FILE"
-
+          echo "APK found: $APK_FILE"
           echo "apk_file=$APK_FILE" >> "$GITHUB_OUTPUT"
 
-      # 9. نسخ APK إلى مسار ثابت
-      #    هذه الخطوة تحل مشكلة:
-      #    Invalid pattern './...'
       - name: Prepare APK artifact
         shell: bash
         run: |
           set -e
 
           rm -rf "$GITHUB_WORKSPACE/artifact"
-
           mkdir -p "$GITHUB_WORKSPACE/artifact"
 
-          SOURCE_APK="${{ steps.locate_project.outputs.project_dir }}/${{ steps.find_apk.outputs.apk_file }}"
+          SOURCE_APK="${{ steps.locate_flutter.outputs.project_dir }}/${{ steps.find_apk.outputs.apk_file }}"
 
           if [ ! -f "$SOURCE_APK" ]; then
-            echo "::error::ملف APK غير موجود في المسار المتوقع:"
+            echo "::error::APK غير موجود:"
             echo "$SOURCE_APK"
             exit 1
           fi
 
           cp "$SOURCE_APK" \
-             "$GITHUB_WORKSPACE/artifact/Waseem-Medical-Pro.apk"
+            "$GITHUB_WORKSPACE/artifact/Waseem-Medical-Pro.apk"
 
-          echo "APK prepared successfully."
+          ls -lh \
+            "$GITHUB_WORKSPACE/artifact/Waseem-Medical-Pro.apk"
 
-          ls -lh "$GITHUB_WORKSPACE/artifact/Waseem-Medical-Pro.apk"
-
-      # 10. رفع APK كـ Artifact
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
@@ -245,16 +180,11 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      # 11. معلومات نهائية
       - name: Build summary
         shell: bash
         run: |
           echo "======================================"
           echo "BUILD SUCCESSFUL"
           echo "======================================"
-
-          echo "APK:"
+          echo "Waseem Medical Pro APK is ready."
           ls -lh "$GITHUB_WORKSPACE/artifact/Waseem-Medical-Pro.apk"
-
-          echo ""
-          echo "The APK artifact is ready."
